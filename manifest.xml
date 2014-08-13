@@ -1,0 +1,15 @@
+<package>
+  <description brief="i90_sensor">
+
+     i90_sensor
+
+  </description>
+  <author>hee502</author>
+  <license>BSD</license>
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/i90_sensor</url>
+  <depend package="roscpp"/>
+
+</package>
+
+
