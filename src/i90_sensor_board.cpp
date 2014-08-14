@@ -68,7 +68,7 @@ int main(int argc, char **argv){
 	while (ros::ok()){
 		if(bCalculation == true){
 			targetPub.publish(targetValue);
-			ROS_INFO("New target: [%f]/t[%f]/t[%f]", targetValue.fXPos, targetValue.fYPos, targetValue.fYawAngle);
+			ROS_INFO("Published new target: [%f]/t[%f]/t[%f]", targetValue.fXPos, targetValue.fYPos, targetValue.fYawAngle);
 			bCalculation = false;
 		}
 		usleep(200000);//Wait for 200ms (5Hz)

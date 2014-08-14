@@ -37,7 +37,7 @@ float fIrAngle[6] = {20.00, 55.00, 75.00, 105.00, 125.00, 160.00};//Angles of in
 float fMaxIr;//Max ir reading level
 int iMaxIrNum;//# of ir sensor with the maximum reading
 i90_sensor_board::pos targetValue;//values to be published on the i90_ir topic
-bool bCalculation;//Shows if calculation of the new target is done
+bool bCalculation;//Flag to check if calculation of the new target is done
 
 /*Prototypes*/
 void recalculateTarget(const i90_sensor_board::pos i90CurrentPos);
