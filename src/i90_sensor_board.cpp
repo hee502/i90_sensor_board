@@ -52,7 +52,7 @@ int main(int argc, char **argv){
 	/*Objects*/
 	ros::init(argc, argv, "i90_sensor");//Create node called "i90_sensor"
 	ros::NodeHandle n;//Create nodehandler to modify features of the node
-	ros::Publisher targetPub = n.advertise<i90_sensor_board::pos>("i90_target", 1);
+	ros::Publisher targetPub = n.advertise<i90_sensor_board::pos>("i90_target_pos", 1);
 	ros::Subscriber translationSub = n.subscribe("i90_current_pos", 1, recalculateTarget);
 
 	/*Check the port*/

@@ -87,7 +87,7 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 	usleep(300000);//sleep for 300ms to allow mbed 
 	read(iPort,cpData,15);//Read 15 bytes from the buffer
 
-	/*Convert to integer/float values*/const drrobot_i90_player::MotorInfoArray MotorInfoArray);
+	/*Convert to integer/float values*/
 	for(int i=0;i<3;i++){//Sonar values
 		iSonar[i] = cData[i];
 	}
