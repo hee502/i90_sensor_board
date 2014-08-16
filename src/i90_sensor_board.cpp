@@ -1,14 +1,13 @@
 ///////////////////////////////////////////////////////////////////////////////
 //Source for i90_sensor node to update target position based on sensor redings/
-//v1.2 																																			 //
-//Based on: v1.1																														 //
+//v1.3 																																			 //
+//Based on: v1.2																														 //
 //Changelog:																																 //
-//-Problems fixed																														 //
-//-Conversion to global frame is added																			 //
-//ToDo:																																			 //
 //-Target decision in case maxIr direction is blocked												 //
+//ToDo:																																		   //
+//-
 //Huseyin Emre Erdem 																												 //
-//15.08.2014 																																 //
+//16.08.2014 																																 //
 ///////////////////////////////////////////////////////////////////////////////
 
 /*This node reads the sensor values from serial port, calculates the next target 
@@ -106,7 +105,7 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 	for(int i=0;i<3;i++){//Sonar values
 		iSonar[i] = cData[i];
 	}
-	ROS_INFO("Sonar: %u\t%u\t%u\t%u\t%u\t%u", iSonar[0], iSonar[1], iSonar[2] );
+	ROS_INFO("Sonar: %u\t%u\t%u", iSonar[0], iSonar[1], iSonar[2] );
 
 	for(int i=0;i<6;i++){//Ir values
 		fIr[i] += cData[4+2*i] / 100.00;//Decimal part
@@ -171,7 +170,7 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 
 	/*Transform relative angles to the general coordinate frame*/
 	if(bCalculation == true){
-		ROS_INFO("target Angle: %f", targetValue.fYawAngle);
+		ROS_INFO("Target relative angle: %f", targetValue.fYawAngle);
 		targetValue.fYawAngle += fCurrentAngleYaw;//Add current yaw to transfer to original frame
 		if(targetValue.fYawAngle < 0.00) targetValue.fYawAngle += 360.00;//Always keep between 0-360
 		if(targetValue.fYawAngle > 360.00) targetValue.fYawAngle -= 360.00;
