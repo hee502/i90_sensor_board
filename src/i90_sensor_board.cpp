@@ -1,19 +1,26 @@
 ///////////////////////////////////////////////////////////////////////////////
 //Source for i90_sensor node to update target position based on sensor redings/
 //v1.3 																																			 //
-//Based on: v1.2																														 //
+//Based on: v1.4																														 //
 //Changelog:																																 //
-//-Target decision in case maxIr direction is blocked												 //
+//-Obstacle visualization is added
 //ToDo:																																		   //
 //-
 //Huseyin Emre Erdem 																												 //
-//16.08.2014 																																 //
+//20.08.2014 																																 //
 ///////////////////////////////////////////////////////////////////////////////
 
 /*This node reads the sensor values from serial port, calculates the next target 
 position to go and publishes this information i90_target_pos topic. The trigger is 
 a new message publishment on i90_current_pos topic.
-The topic publishes messages of types of i90_sensor_board::pos*/
+The topic publishes messages of types of i90_sensor_board::pos
+Dynamic travel distance: max Ir level - travel distance
+3.25 - 3.20: 0.1m
+3.20 - 3.15: 0.2m
+3.15 - 3.10: 0.3m
+3.10 - 3.05: 0.4m
+3.05 - ~   : 0.5m
+*/
 
 #include "ros/ros.h"
 #include "pos.h"//header file of special message type (x,y,yaw)
@@ -23,25 +30,31 @@ The topic publishes messages of types of i90_sensor_board::pos*/
 #include <fcntl.h>
 #include <termios.h>
 #include <unistd.h>//for usleep()
-#define RADIUS 0.5//radius of new target position (origin = current position)
+#include <visualization_msgs/Marker.h>//for visualization
+#include <cmath>
+#define PI 3.141593
 
 /*Variables*/
 char *cpPortName = "/dev/rfcomm0";
 char cData[15];//Characters to be read from the serial port
 char *cpData = &cData[0];//pointer to data
-uint8_t iSonar[3];//Sonar distances
+uint8_t iSonar[3];//Sonar distances in cm
+float fSonar[3];//Sonar distances in m
 float fIr[6];//Ir levels
-//float fSonarAngle[3] = {20.00, 90.00, 160.00};//Angles of sonar sensors
-float fSonarAngle[3] = {70.00, 0.00, -70.00};//Angles of sonar sensors
-//float fIrAngle[6] = {70.00, 55.00, 15.00, 345.00, 305.00, 290.00};//Angles of infrared sensors relative to the robot body
-float fIrAngle[6] = {70.00, 45.00, 15.00, -15.00, -45.00, -70.00};//Angles of infrared sensors relative to the robot body
+float fSonarAngle[3] = {40.00, 0.00, -40.00};//Angles of sonar sensors
+float fIrAngle[6] = {50.00, 30.00, 10.00, -10.00, -30.00, -50.00};//Angles of infrared sensors relative to the robot body
 float fMaxIr;//Max ir reading level
+float fTravelDist;//Distance to travel during straight movement
+int iIrOrder[2] = {};//Order of ir levels (descending). 0:max, 1:second max
 float fCurrentPosX;
 float fCurrentPosY;
 float fCurrentAngleYaw;
 int iMaxIrNum;//# of ir sensor with the maximum reading
-i90_sensor_board::pos targetValue;//values to be published on the i90_ir topic
 bool bCalculation;//Flag to check if calculation of the new target is done
+bool bBeacon;//0:beacon not found, 1:found
+uint32_t shape = visualization_msgs::Marker::CUBE;
+i90_sensor_board::pos targetValue;//values to be published on the i90_ir topic
+int iObstacleNum = 0;
 
 /*Prototypes*/
 void recalculateTarget(const i90_sensor_board::pos i90CurrentPos);
@@ -57,6 +70,7 @@ int main(int argc, char **argv){
 	ros::init(argc, argv, "i90_sensor");//Create node called "i90_sensor"
 	ros::NodeHandle n;//Create nodehandler to modify features of the node
 	ros::Publisher targetPub = n.advertise<i90_sensor_board::pos>("i90_target_pos", 1);
+	ros::Publisher markerPub = n.advertise<visualization_msgs::Marker>("visualization_marker",10);
 	ros::Subscriber translationSub = n.subscribe("i90_current_pos", 1, recalculateTarget);
 
 	/*Check the port*/
@@ -68,9 +82,41 @@ int main(int argc, char **argv){
   }
 	setInterfaceAttribs (iPort, B115200, 0);//Set
 	bCalculation = false;
+	bBeacon = false;
+	fTravelDist = 0.5;
 
 	while (ros::ok()){
 		if(bCalculation == true){
+			/*Visualization*/
+			for(int i=0;i<3;i++){
+				if(fSonar[i] < 2.54){
+					visualization_msgs::Marker marker;
+					marker.header.frame_id = "/my_frame";
+					marker.header.stamp = ros::Time::now();
+					marker.ns = "basic_shapes";
+					marker.id = iObstacleNum;
+					iObstacleNum++;
+					marker.type = shape;
+					marker.action = visualization_msgs::Marker::ADD;
+					marker.pose.orientation.x = 0.0;
+					marker.pose.orientation.y = 0.0;
+					marker.pose.orientation.z = 0.0;
+					marker.pose.orientation.w = 1.0;
+					marker.scale.x = 0.1;
+					marker.scale.y = 0.1;
+					marker.scale.z = 0.1;
+					marker.color.r = 1.0f;
+					marker.color.g = 0.0f;
+					marker.color.b = 0.0f;
+					marker.color.a = 1.0;
+					marker.lifetime = ros::Duration();
+					marker.pose.position.x = fCurrentPosX + fSonar[i] * cos((fCurrentAngleYaw + fSonarAngle[i]) / 180 * M_PI);
+					marker.pose.position.y = fCurrentPosY + fSonar[i] * sin((fCurrentAngleYaw + fSonarAngle[i]) / 180 * M_PI);
+					marker.pose.position.z = 0;
+					markerPub.publish(marker);
+				}
+			}
+
 			targetPub.publish(targetValue);
 			ROS_INFO("Published new target: %f\t%f\t%f", targetValue.fXPos, targetValue.fYPos, targetValue.fYawAngle);
 			bCalculation = false;
@@ -104,8 +150,9 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 	/*Convert to integer/float values*/
 	for(int i=0;i<3;i++){//Sonar values
 		iSonar[i] = cData[i];
+		fSonar[i] = iSonar[i] / 100.00;
 	}
-	ROS_INFO("Sonar: %u\t%u\t%u", iSonar[0], iSonar[1], iSonar[2] );
+	ROS_INFO("Sonar: %f\t%f\t%f", fSonar[0], fSonar[1], fSonar[2] );
 
 	for(int i=0;i<6;i++){//Ir values
 		fIr[i] += cData[4+2*i] / 100.00;//Decimal part
@@ -117,72 +164,132 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 
 	/*Find the ir with maximum level*/
 	fMaxIr = 0.00;
-	iMaxIrNum = 0;
 	for(int i=0;i<6;i++){
 		if(fIr[i] >= fMaxIr){
 			fMaxIr = fIr[i];
-			iMaxIrNum = i;
+			iIrOrder[0] = i;
 		}
 	}
-	ROS_INFO("maxIr: %u", iMaxIrNum);
 
-	/*Check for obstacles*/
-	switch(iMaxIrNum){
+	/*Find ir with second max*/
+	fMaxIr = 0.00;
+	for(int i=0;i<6;i++){
+		if(i != iIrOrder[0]){
+			if(fIr[i] >= fMaxIr){
+				fMaxIr = fIr[i];
+				iIrOrder[1] = i;
+			}
+		}
+	}
+	ROS_INFO("maxIr: %u\t%u\t%f\t%f", iIrOrder[0], iIrOrder[1], fIr[iIrOrder[0]], fIr[iIrOrder[1]]);
+
+	/*Check if the beacon is reached*/
+	if(fIr[iIrOrder[0]] >= 3.25){//If the threshold is reached
+		bBeacon = true;
+	}
+	/*if(fIr[iIrOrder[0]] < 3.25 && fIr[iIrOrder[0]] >= 3.21){
+			fTravelDist = 0.1;
+	}
+	if(fIr[iIrOrder[0]] < 3.21 && fIr[iIrOrder[0]] >= 3.16){
+			fTravelDist = 0.2;
+	}
+	if(fIr[iIrOrder[0]] < 3.16 && fIr[iIrOrder[0]] >= 3.11){
+			fTravelDist = 0.3;
+	}
+	if(fIr[iIrOrder[0]] < 3.11 && fIr[iIrOrder[0]] >= 3.06){
+			fTravelDist = 0.4;
+	}
+	if(fIr[iIrOrder[0]] < 3.06){
+		fTravelDist = 0.5;
+	}
+*/
+	/*Check for obstacles to calculate relative turning angle*/
+	switch(iIrOrder[0]){//Sensor with maximum IR level
 	case 0:
-		if(iSonar[0] > 50){
-			targetValue.fYawAngle = fIrAngle[0];
+		if(fSonar[0] > fTravelDist){
+			if(iIrOrder[1] == 1){//If second max is sensor #1
+				targetValue.fYawAngle = fIrAngle[0] - ((fIrAngle[0] - fIrAngle[1]) * fIr[1] / (fIr[0] + fIr[1]));//Use the weighted angle
+			}
+			else{
+				targetValue.fYawAngle = fIrAngle[0];//Use only max Ir angle
+			}
 			bCalculation = true;//Update flag to publish the calculated target
 		}
 		break;
 	case 1:
-		if(iSonar[0] > 50 && iSonar[1] > 50){
-			targetValue.fYawAngle = fIrAngle[1];
+		if(fSonar[0] > fTravelDist){
+			if(abs(iIrOrder[1] - 1) == 1){//Second max is a neighbour
+					targetValue.fYawAngle = fIrAngle[1] - ((fIrAngle[1] - fIrAngle[iIrOrder[1]]) * fIr[iIrOrder[1]] / (fIr[1] + fIr[iIrOrder[1]]));//Use the weighted angle
+			}
+			else{
+				targetValue.fYawAngle = fIrAngle[1];//use the angle directly
+			}
 			bCalculation = true;//Update flag to publish the calculated target
 		}
 		break;
 	case 2:
-		if(iSonar[1] > 50){
-			//targetValue.fYawAngle = fIrAngle[2];
-			targetValue.fYawAngle = fIrAngle[2] - (30.00 * fIr[3] / (fIr[2] + fIr[3]));
+		if(fSonar[1] > fTravelDist){
+			if(abs(iIrOrder[1] - 2) == 1){//Second max is a neighbour
+				targetValue.fYawAngle = fIrAngle[2] - ((fIrAngle[2] - fIrAngle[iIrOrder[1]]) * fIr[iIrOrder[1]] / (fIr[2] + fIr[iIrOrder[1]]));//Use the weighted angle
+			}
+			else{
+				targetValue.fYawAngle = fIrAngle[2];
+			}
 			bCalculation = true;//Update flag to publish the calculated target
 		}
 		break;
 	case 3:
-		if(iSonar[1] > 50){
-			//targetValue.fYawAngle = fIrAngle[3];
-			targetValue.fYawAngle = fIrAngle[3] + (30.00 * fIr[2] / (fIr[2] + fIr[3]));
+		if(fSonar[1] > fTravelDist){
+			if(abs(iIrOrder[1] - 3) == 1){//Second max is a neighbour
+				targetValue.fYawAngle = fIrAngle[3] - ((fIrAngle[3] - fIrAngle[iIrOrder[1]]) * fIr[iIrOrder[1]] / (fIr[3] + fIr[iIrOrder[1]]));//Use the weighted angle
+			}
+			else{
+				targetValue.fYawAngle = fIrAngle[3];
+			}
 			bCalculation = true;//Update flag to publish the calculated target
 		}
 		break;
 	case 4:
-		if(iSonar[1] > 50 && iSonar[2] > 50){
-			targetValue.fYawAngle = fIrAngle[4];
+		if(fSonar[2] > fTravelDist){
+			if(abs(iIrOrder[1] - 4) == 1){//Second max is a neighbour
+				targetValue.fYawAngle = fIrAngle[4] - ((fIrAngle[4] - fIrAngle[iIrOrder[1]]) * fIr[iIrOrder[1]] / (fIr[4] + fIr[iIrOrder[1]]));//Use the weighted angle
+			}
+			else{
+				targetValue.fYawAngle = fIrAngle[4];
+			}
 			bCalculation = true;//Update flag to publish the calculated target
 		}
 		break;
 	case 5:
-		if(iSonar[2] > 50){
-			targetValue.fYawAngle = fIrAngle[5];
+		if(fSonar[2] > fTravelDist){
+			if(iIrOrder[1] == 4){//Second max is a neighbour
+				targetValue.fYawAngle = fIrAngle[5] - ((fIrAngle[5] - fIrAngle[4]) * fIr[4] / (fIr[5] + fIr[4]));//Use the weighted angle
+			}
+			else{
+				targetValue.fYawAngle = fIrAngle[5];
+			}
 			bCalculation = true;//Update flag to publish the calculated target
 		}
 		break;
 	}
+	ROS_INFO("Relative angle: %f", targetValue.fYawAngle);
+	ROS_INFO("Current angle: %f", fCurrentAngleYaw);
+	ROS_INFO("bCalculation: %d", bCalculation);
 
 	/*Transform relative angles to the general coordinate frame*/
 	if(bCalculation == true){
-		ROS_INFO("Target relative angle: %f", targetValue.fYawAngle);
 		targetValue.fYawAngle += fCurrentAngleYaw;//Add current yaw to transfer to original frame
 		if(targetValue.fYawAngle < 0.00) targetValue.fYawAngle += 360.00;//Always keep between 0-360
 		if(targetValue.fYawAngle > 360.00) targetValue.fYawAngle -= 360.00;
-		targetValue.fXPos = i90CurrentPos.fXPos + cos(targetValue.fYawAngle) * RADIUS;//Increment on X axis
-		targetValue.fYPos = i90CurrentPos.fXPos + sin(targetValue.fYawAngle) * RADIUS;//Increment on Y axis
+		targetValue.fXPos = fCurrentPosX + cos(targetValue.fYawAngle * PI / 180.00) * fTravelDist;//Increment on X axis
+		targetValue.fYPos = fCurrentPosY + sin(targetValue.fYawAngle * PI / 180.00) * fTravelDist;//Increment on Y axis
 	}
 
 	/*If all the directions are obstructed, turn right*/
 	/*if(bCalculation == false && bTurnRight == false){
 			targetValue.fYawAngle = 0.00;
-			targetValue.fXPos = i90CurrentPos.fXPos + cos(fIrAngle[5]) * RADIUS;
-			targetValue.fYPos = i90CurrentPos.fXPos + sin(fIrAngle[5]) * RADIUS;
+			targetValue.fXPos = i90CurrentPos.fXPos + cos(fIrAngle[5]) * fTravelDist;
+			targetValue.fYPos = i90CurrentPos.fXPos + sin(fIrAngle[5]) * fTravelDist;
 			bCalculation = true;//Update flag to publish the calculated target
 			bTurnRight = true;
 	}
@@ -190,8 +297,8 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 	/*If all the directions are obstructed and also right is checked, turn left*/
 	/*if(bCalculation == false && bTurnRight == true){
 			targetValue.fYawAngle = fIrAngle[5];
-			targetValue.fXPos = i90CurrentPos.fXPos + cos(fIrAngle[5]) * RADIUS;
-			targetValue.fYPos = i90CurrentPos.fXPos + sin(fIrAngle[5]) * RADIUS;
+			targetValue.fXPos = i90CurrentPos.fXPos + cos(fIrAngle[5]) * fTravelDist;
+			targetValue.fYPos = i90CurrentPos.fXPos + sin(fIrAngle[5]) * fTravelDist;
 			bCalculation = true;//Update flag to publish the calculated target		
 	}*/
 }
@@ -230,4 +337,5 @@ int setInterfaceAttribs (int iFd, int iSpeed, int iParity){
 	}
 	return 0;
 }
+
 

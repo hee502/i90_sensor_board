@@ -1,13 +1,13 @@
 ///////////////////////////////////////////////////////////////////////////////
 //Source for i90_sensor node to update target position based on sensor redings/
-//v1.1 																																			 //
-//Based on: v1.0																														 //
+//v1.3 																																			 //
+//Based on: v1.2																														 //
 //Changelog:																																 //
-//-Target calculation added																									 //
-//Todo:																																			 //
-//-Prevent not publishing new target in case of all obstructed directions		 //
+//-Target decision in case maxIr direction is blocked												 //
+//ToDo:																																		   //
+//-
 //Huseyin Emre Erdem 																												 //
-//13.08.2014 																																 //
+//16.08.2014 																																 //
 ///////////////////////////////////////////////////////////////////////////////
 
 /*This node reads the sensor values from serial port, calculates the next target 
@@ -22,7 +22,7 @@ The topic publishes messages of types of i90_sensor_board::pos*/
 #include <string.h>
 #include <fcntl.h>
 #include <termios.h>
-#include <unistd.h>
+#include <unistd.h>//for usleep()
 #define RADIUS 0.5//radius of new target position (origin = current position)
 
 /*Variables*/
@@ -31,10 +31,14 @@ char cData[15];//Characters to be read from the serial port
 char *cpData = &cData[0];//pointer to data
 uint8_t iSonar[3];//Sonar distances
 float fIr[6];//Ir levels
-//uint8_t uSonar[3];//Sonar values converted from received chars
-float fSonarAngle[3] = {20.00, 90.00, 160.00};//Angles of sonar sensors
-float fIrAngle[6] = {20.00, 55.00, 75.00, 105.00, 125.00, 160.00};//Angles of infrared sensors
+//float fSonarAngle[3] = {20.00, 90.00, 160.00};//Angles of sonar sensors
+float fSonarAngle[3] = {70.00, 0.00, -70.00};//Angles of sonar sensors
+//float fIrAngle[6] = {70.00, 55.00, 15.00, 345.00, 305.00, 290.00};//Angles of infrared sensors relative to the robot body
+float fIrAngle[6] = {70.00, 45.00, 15.00, -15.00, -45.00, -70.00};//Angles of infrared sensors relative to the robot body
 float fMaxIr;//Max ir reading level
+float fCurrentPosX;
+float fCurrentPosY;
+float fCurrentAngleYaw;
 int iMaxIrNum;//# of ir sensor with the maximum reading
 i90_sensor_board::pos targetValue;//values to be published on the i90_ir topic
 bool bCalculation;//Flag to check if calculation of the new target is done
@@ -52,7 +56,7 @@ int main(int argc, char **argv){
 	/*Objects*/
 	ros::init(argc, argv, "i90_sensor");//Create node called "i90_sensor"
 	ros::NodeHandle n;//Create nodehandler to modify features of the node
-	ros::Publisher targetPub = n.advertise<i90_sensor_board::pos>("i90_target", 1);
+	ros::Publisher targetPub = n.advertise<i90_sensor_board::pos>("i90_target_pos", 1);
 	ros::Subscriber translationSub = n.subscribe("i90_current_pos", 1, recalculateTarget);
 
 	/*Check the port*/
@@ -68,7 +72,7 @@ int main(int argc, char **argv){
 	while (ros::ok()){
 		if(bCalculation == true){
 			targetPub.publish(targetValue);
-			ROS_INFO("Published new target: [%f]/t[%f]/t[%f]", targetValue.fXPos, targetValue.fYPos, targetValue.fYawAngle);
+			ROS_INFO("Published new target: %f\t%f\t%f", targetValue.fXPos, targetValue.fYPos, targetValue.fYawAngle);
 			bCalculation = false;
 		}
 		usleep(200000);//Wait for 200ms (5Hz)
@@ -80,23 +84,34 @@ int main(int argc, char **argv){
 
 void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 
-	/*Read sensors on the mbed board*/
+	/*Read current position values*/
+	fCurrentPosX = i90CurrentPos.fXPos;
+	fCurrentPosY = i90CurrentPos.fYPos;
+	fCurrentAngleYaw = i90CurrentPos.fYawAngle;
+
+	/*Request & read sensor values on the mbed board*/
 	tcflush(iPort, TCIFLUSH);//Empty the buffer
 	write(iPort,"s",1);
 	ROS_INFO("Data request sent");//Inform user on the terminal
 	usleep(300000);//sleep for 300ms to allow mbed 
 	read(iPort,cpData,15);//Read 15 bytes from the buffer
 
+	/*Clean values*/
+	for(int i=0; i<6;i++){
+		fIr[i] = 0;
+	}
+
 	/*Convert to integer/float values*/
 	for(int i=0;i<3;i++){//Sonar values
 		iSonar[i] = cData[i];
 	}
-	for(int i=0;i<6;i++){//Ir fraction
-		fIr[i] += cData[3+i] / 100.00;
+	ROS_INFO("Sonar: %u\t%u\t%u", iSonar[0], iSonar[1], iSonar[2] );
+
+	for(int i=0;i<6;i++){//Ir values
+		fIr[i] += cData[4+2*i] / 100.00;//Decimal part
+		fIr[i] += (float) cData[3+2*i];//Integer part
 	}
-	for(int i=0;i<6;i++){//Ir integer
-		fIr[i] += (float) cData[3+2*i];
-	}
+	ROS_INFO("IR: %f\t%f\t%f\t%f\t%f\t%f", fIr[0], fIr[1], fIr[2], fIr[3], fIr[4], fIr[5] );
 
 	/*Calculate the direction with max ir and no obstacle*/
 
@@ -109,63 +124,76 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 			iMaxIrNum = i;
 		}
 	}
+	ROS_INFO("maxIr: %u", iMaxIrNum);
 
 	/*Check for obstacles*/
 	switch(iMaxIrNum){
 	case 0:
 		if(iSonar[0] > 50){
 			targetValue.fYawAngle = fIrAngle[0];
-			targetValue.fXPos = i90CurrentPos.fXPos + cos(fIrAngle[0]) * RADIUS;
-			targetValue.fYPos = i90CurrentPos.fXPos + sin(fIrAngle[0]) * RADIUS;
+			bCalculation = true;//Update flag to publish the calculated target
 		}
-		bCalculation = true;//Update flag to publish the calculated target
 		break;
 	case 1:
 		if(iSonar[0] > 50 && iSonar[1] > 50){
 			targetValue.fYawAngle = fIrAngle[1];
-			targetValue.fXPos = i90CurrentPos.fXPos + cos(fIrAngle[1]) * RADIUS;
-			targetValue.fYPos = i90CurrentPos.fXPos + sin(fIrAngle[1]) * RADIUS;
+			bCalculation = true;//Update flag to publish the calculated target
 		}
-		bCalculation = true;//Update flag to publish the calculated target
 		break;
 	case 2:
 		if(iSonar[1] > 50){
-			targetValue.fYawAngle = fIrAngle[2];
-			targetValue.fXPos = i90CurrentPos.fXPos + cos(fIrAngle[2]) * RADIUS;
-			targetValue.fYPos = i90CurrentPos.fXPos + sin(fIrAngle[2]) * RADIUS;
+			//targetValue.fYawAngle = fIrAngle[2];
+			targetValue.fYawAngle = fIrAngle[2] - (30.00 * fIr[3] / (fIr[2] + fIr[3]));
+			bCalculation = true;//Update flag to publish the calculated target
 		}
-		bCalculation = true;//Update flag to publish the calculated target
 		break;
 	case 3:
 		if(iSonar[1] > 50){
-			targetValue.fYawAngle = fIrAngle[3];
-			targetValue.fXPos = i90CurrentPos.fXPos + cos(fIrAngle[3]) * RADIUS;
-			targetValue.fYPos = i90CurrentPos.fXPos + sin(fIrAngle[3]) * RADIUS;
+			//targetValue.fYawAngle = fIrAngle[3];
+			targetValue.fYawAngle = fIrAngle[3] + (30.00 * fIr[2] / (fIr[2] + fIr[3]));
+			bCalculation = true;//Update flag to publish the calculated target
 		}
-		bCalculation = true;//Update flag to publish the calculated target
 		break;
 	case 4:
 		if(iSonar[1] > 50 && iSonar[2] > 50){
 			targetValue.fYawAngle = fIrAngle[4];
-			targetValue.fXPos = i90CurrentPos.fXPos + cos(fIrAngle[4]) * RADIUS;
-			targetValue.fYPos = i90CurrentPos.fXPos + sin(fIrAngle[4]) * RADIUS;
+			bCalculation = true;//Update flag to publish the calculated target
 		}
-		bCalculation = true;//Update flag to publish the calculated target
 		break;
 	case 5:
 		if(iSonar[2] > 50){
 			targetValue.fYawAngle = fIrAngle[5];
-			targetValue.fXPos = i90CurrentPos.fXPos + cos(fIrAngle[5]) * RADIUS;
-			targetValue.fYPos = i90CurrentPos.fXPos + sin(fIrAngle[5]) * RADIUS;
+			bCalculation = true;//Update flag to publish the calculated target
 		}
-		bCalculation = true;//Update flag to publish the calculated target
 		break;
 	}
-	
-	/*If the direction is obstructed*/
-	if(bCalculation == false){
-		
+
+	/*Transform relative angles to the general coordinate frame*/
+	if(bCalculation == true){
+		ROS_INFO("Target relative angle: %f", targetValue.fYawAngle);
+		targetValue.fYawAngle += fCurrentAngleYaw;//Add current yaw to transfer to original frame
+		if(targetValue.fYawAngle < 0.00) targetValue.fYawAngle += 360.00;//Always keep between 0-360
+		if(targetValue.fYawAngle > 360.00) targetValue.fYawAngle -= 360.00;
+		targetValue.fXPos = i90CurrentPos.fXPos + cos(targetValue.fYawAngle) * RADIUS;//Increment on X axis
+		targetValue.fYPos = i90CurrentPos.fXPos + sin(targetValue.fYawAngle) * RADIUS;//Increment on Y axis
 	}
+
+	/*If all the directions are obstructed, turn right*/
+	/*if(bCalculation == false && bTurnRight == false){
+			targetValue.fYawAngle = 0.00;
+			targetValue.fXPos = i90CurrentPos.fXPos + cos(fIrAngle[5]) * RADIUS;
+			targetValue.fYPos = i90CurrentPos.fXPos + sin(fIrAngle[5]) * RADIUS;
+			bCalculation = true;//Update flag to publish the calculated target
+			bTurnRight = true;
+	}
+*/
+	/*If all the directions are obstructed and also right is checked, turn left*/
+	/*if(bCalculation == false && bTurnRight == true){
+			targetValue.fYawAngle = fIrAngle[5];
+			targetValue.fXPos = i90CurrentPos.fXPos + cos(fIrAngle[5]) * RADIUS;
+			targetValue.fYPos = i90CurrentPos.fXPos + sin(fIrAngle[5]) * RADIUS;
+			bCalculation = true;//Update flag to publish the calculated target		
+	}*/
 }
 
 int setInterfaceAttribs (int iFd, int iSpeed, int iParity){
@@ -187,9 +215,7 @@ int setInterfaceAttribs (int iFd, int iSpeed, int iParity){
 	tty.c_oflag = 0;                // no remapping, no delays
 	tty.c_cc[VMIN]  = 0;            // read doesn't block
 	tty.c_cc[VTIME] = 5;            // 0.5 seconds read timeout
-
 	tty.c_iflag &= ~(IXON | IXOFF | IXANY); // shut off xon/xoff ctrl
-
 	tty.c_cflag |= (CLOCAL | CREAD);// ignore modem controls,
 		                              // enable reading
 	tty.c_cflag &= ~(PARENB | PARODD);      // shut off parity
