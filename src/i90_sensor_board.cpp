@@ -59,6 +59,7 @@ int iObstacleNum = 0;
 /*Prototypes*/
 void recalculateTarget(const i90_sensor_board::pos i90CurrentPos);
 int setInterfaceAttribs (int iFd, int iSpeed, int iParity);//Sets serial port parameters
+int mygetch(void);
 
 /*Opening port*/
 int iPort = open(cpPortName, O_RDWR | O_NOCTTY | O_NDELAY);
@@ -122,6 +123,7 @@ int main(int argc, char **argv){
 			bCalculation = false;
 		}
 		usleep(200000);//Wait for 200ms (5Hz)
+		//mygetch();
 		ros::spinOnce();
 		//loop_rate.sleep();
 	}
@@ -338,4 +340,17 @@ int setInterfaceAttribs (int iFd, int iSpeed, int iParity){
 	return 0;
 }
 
+int mygetch(void){
+  int ch;
+  struct termios oldt, newt;
+
+  tcgetattr ( STDIN_FILENO, &oldt );
+  newt = oldt;
+  newt.c_lflag &= ~( ICANON | ECHO );
+  tcsetattr ( STDIN_FILENO, TCSANOW, &newt );
+  ch = getchar();
+  tcsetattr ( STDIN_FILENO, TCSANOW, &oldt );
+
+  return ch;
+}
 
