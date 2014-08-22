@@ -1,13 +1,13 @@
 ///////////////////////////////////////////////////////////////////////////////
 //Source for i90_sensor node to update target position based on sensor redings/
-//v1.3 																																			 //
+//v1.5 																																			 //
 //Based on: v1.4																														 //
 //Changelog:																																 //
-//-Obstacle visualization is added
-//ToDo:																																		   //
-//-
+//-Solution for obstructed view added 																			 //
+//ToDo:																																			 //
+//-Add movement with 3 steps																								 //
 //Huseyin Emre Erdem 																												 //
-//20.08.2014 																																 //
+//22.08.2014 																																 //
 ///////////////////////////////////////////////////////////////////////////////
 
 /*This node reads the sensor values from serial port, calculates the next target 
@@ -20,6 +20,7 @@ Dynamic travel distance: max Ir level - travel distance
 3.15 - 3.10: 0.3m
 3.10 - 3.05: 0.4m
 3.05 - ~   : 0.5m
+In case of an obstructed view, robot turns right and then left
 */
 
 #include "ros/ros.h"
@@ -52,6 +53,10 @@ float fCurrentAngleYaw;
 int iMaxIrNum;//# of ir sensor with the maximum reading
 bool bCalculation;//Flag to check if calculation of the new target is done
 bool bBeacon;//0:beacon not found, 1:found
+bool bTurnRight;//Shows if the robot checked right side for ir in case of an obstructed state
+bool bTurnLeft;
+bool bTurnCenter;
+bool bOnlyTurn;
 uint32_t shape = visualization_msgs::Marker::CUBE;
 i90_sensor_board::pos targetValue;//values to be published on the i90_ir topic
 int iObstacleNum = 0;
@@ -59,7 +64,6 @@ int iObstacleNum = 0;
 /*Prototypes*/
 void recalculateTarget(const i90_sensor_board::pos i90CurrentPos);
 int setInterfaceAttribs (int iFd, int iSpeed, int iParity);//Sets serial port parameters
-int mygetch(void);
 
 /*Opening port*/
 int iPort = open(cpPortName, O_RDWR | O_NOCTTY | O_NDELAY);
@@ -84,6 +88,8 @@ int main(int argc, char **argv){
 	setInterfaceAttribs (iPort, B115200, 0);//Set
 	bCalculation = false;
 	bBeacon = false;
+	bTurnRight = false;
+	bTurnLeft = false;
 	fTravelDist = 0.5;
 
 	while (ros::ok()){
@@ -121,9 +127,9 @@ int main(int argc, char **argv){
 			targetPub.publish(targetValue);
 			ROS_INFO("Published new target: %f\t%f\t%f", targetValue.fXPos, targetValue.fYPos, targetValue.fYawAngle);
 			bCalculation = false;
+			bOnlyTurn = false;
 		}
 		usleep(200000);//Wait for 200ms (5Hz)
-		//mygetch();
 		ros::spinOnce();
 		//loop_rate.sleep();
 	}
@@ -182,6 +188,10 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 				iIrOrder[1] = i;
 			}
 		}
+	}
+	if(fIr[iIrOrder[0]] < 0.2){
+		iIrOrder[0] = 2;
+		iIrOrder[1] = 1;
 	}
 	ROS_INFO("maxIr: %u\t%u\t%f\t%f", iIrOrder[0], iIrOrder[1], fIr[iIrOrder[0]], fIr[iIrOrder[1]]);
 
@@ -274,35 +284,93 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 		}
 		break;
 	}
+
+	/*Use the angle of the second max if first is obstructed*/
+	if(bCalculation == false){
+		switch(iIrOrder[1]){//Sensor with maximum IR level
+		case 0:
+			if(fSonar[0] > fTravelDist){
+				targetValue.fYawAngle = fIrAngle[0];
+				bCalculation = true;//Update flag to publish the calculated target
+			}
+			break;
+		case 1:
+			if(fSonar[0] > fTravelDist){
+				targetValue.fYawAngle = fIrAngle[1];
+				bCalculation = true;//Update flag to publish the calculated target
+			}
+			break;
+		case 2:
+			if(fSonar[1] > fTravelDist){
+				targetValue.fYawAngle = fIrAngle[2];
+				bCalculation = true;//Update flag to publish the calculated target
+			}
+			break;
+		case 3:
+			if(fSonar[1] > fTravelDist){
+				targetValue.fYawAngle = fIrAngle[3];
+				bCalculation = true;//Update flag to publish the calculated target
+			}
+			break;
+		case 4:
+			if(fSonar[2] > fTravelDist){
+				targetValue.fYawAngle = fIrAngle[4];
+				bCalculation = true;//Update flag to publish the calculated target
+			}
+			break;
+		case 5:
+			if(fSonar[2] > fTravelDist){
+				targetValue.fYawAngle = fIrAngle[5];
+				bCalculation = true;//Update flag to publish the calculated target
+			}
+			break;
+		}
+	}
+
+	/*If all the directions are obstructed, turn right*/
+	if(bCalculation == false && bTurnCenter == false && bTurnRight == false){
+		targetValue.fYawAngle = -90.00;//Turn right
+		bCalculation = true;//Update flag to publish the calculated target
+		bTurnRight = true;
+		bOnlyTurn = true;
+	}
+
+	/*If all the directions are obstructed and also right is checked, turn left to the center*/
+	if(bCalculation == false && bTurnRight == true && bTurnCenter == false){
+		targetValue.fYawAngle = 90.00;//Turn left
+		bCalculation = true;//Update flag to publish the calculated target
+		bTurnCenter = true;//Ignore not finding enough ir in the left
+		bOnlyTurn = true;
+	}
+	
+	if(bCalculation == false && bTurnCenter == true && bTurnCenter == true){
+		targetValue.fYawAngle = 90.00;//Turn left
+		bCalculation = true;//Update flag to publish the calculated target
+		bTurnLeft = true;//Ignore not finding enough ir in the left		
+		bOnlyTurn = true;
+	}
+
 	ROS_INFO("Relative angle: %f", targetValue.fYawAngle);
 	ROS_INFO("Current angle: %f", fCurrentAngleYaw);
 	ROS_INFO("bCalculation: %d", bCalculation);
 
 	/*Transform relative angles to the general coordinate frame*/
-	if(bCalculation == true){
+	if(bCalculation == true){//If new target is found
 		targetValue.fYawAngle += fCurrentAngleYaw;//Add current yaw to transfer to original frame
 		if(targetValue.fYawAngle < 0.00) targetValue.fYawAngle += 360.00;//Always keep between 0-360
 		if(targetValue.fYawAngle > 360.00) targetValue.fYawAngle -= 360.00;
-		targetValue.fXPos = fCurrentPosX + cos(targetValue.fYawAngle * PI / 180.00) * fTravelDist;//Increment on X axis
-		targetValue.fYPos = fCurrentPosY + sin(targetValue.fYawAngle * PI / 180.00) * fTravelDist;//Increment on Y axis
+		if(bOnlyTurn == false){//If target is not obstructed
+			targetValue.fXPos = fCurrentPosX + cos(targetValue.fYawAngle * PI / 180.00) * fTravelDist;//Increment on X axis
+			targetValue.fYPos = fCurrentPosY + sin(targetValue.fYawAngle * PI / 180.00) * fTravelDist;//Increment on Y axis
+			bTurnRight = false;
+			bTurnLeft = false;
+			bTurnCenter = false;
+		}
+		else{//If target is obstructed
+			targetValue.fXPos = fCurrentPosX;//Only turn
+			targetValue.fYPos = fCurrentPosY;
+		}
 	}
-
-	/*If all the directions are obstructed, turn right*/
-	/*if(bCalculation == false && bTurnRight == false){
-			targetValue.fYawAngle = 0.00;
-			targetValue.fXPos = i90CurrentPos.fXPos + cos(fIrAngle[5]) * fTravelDist;
-			targetValue.fYPos = i90CurrentPos.fXPos + sin(fIrAngle[5]) * fTravelDist;
-			bCalculation = true;//Update flag to publish the calculated target
-			bTurnRight = true;
-	}
-*/
-	/*If all the directions are obstructed and also right is checked, turn left*/
-	/*if(bCalculation == false && bTurnRight == true){
-			targetValue.fYawAngle = fIrAngle[5];
-			targetValue.fXPos = i90CurrentPos.fXPos + cos(fIrAngle[5]) * fTravelDist;
-			targetValue.fYPos = i90CurrentPos.fXPos + sin(fIrAngle[5]) * fTravelDist;
-			bCalculation = true;//Update flag to publish the calculated target		
-	}*/
 }
 
 int setInterfaceAttribs (int iFd, int iSpeed, int iParity){
@@ -338,19 +406,5 @@ int setInterfaceAttribs (int iFd, int iSpeed, int iParity){
     return -1;
 	}
 	return 0;
-}
-
-int mygetch(void){
-  int ch;
-  struct termios oldt, newt;
-
-  tcgetattr ( STDIN_FILENO, &oldt );
-  newt = oldt;
-  newt.c_lflag &= ~( ICANON | ECHO );
-  tcsetattr ( STDIN_FILENO, TCSANOW, &newt );
-  ch = getchar();
-  tcsetattr ( STDIN_FILENO, TCSANOW, &oldt );
-
-  return ch;
 }
 

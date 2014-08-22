@@ -60,6 +60,7 @@ bool bOnlyTurn;
 uint32_t shape = visualization_msgs::Marker::CUBE;
 i90_sensor_board::pos targetValue;//values to be published on the i90_ir topic
 int iObstacleNum = 0;
+int iCounter = 0;
 
 /*Prototypes*/
 void recalculateTarget(const i90_sensor_board::pos i90CurrentPos);
@@ -160,7 +161,7 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 		iSonar[i] = cData[i];
 		fSonar[i] = iSonar[i] / 100.00;
 	}
-	ROS_INFO("Sonar: %f\t%f\t%f", fSonar[0], fSonar[1], fSonar[2] );
+	ROS_INFO("-%d- Sonar: %f\t%f\t%f", iCounter, fSonar[0], fSonar[1], fSonar[2] );
 
 	for(int i=0;i<6;i++){//Ir values
 		fIr[i] += cData[4+2*i] / 100.00;//Decimal part
@@ -193,7 +194,7 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 		iIrOrder[0] = 2;
 		iIrOrder[1] = 1;
 	}
-	ROS_INFO("maxIr: %u\t%u\t%f\t%f", iIrOrder[0], iIrOrder[1], fIr[iIrOrder[0]], fIr[iIrOrder[1]]);
+	ROS_INFO("-%d- maxIr: %u\t%u\t%f\t%f", iCounter, iIrOrder[0], iIrOrder[1], fIr[iIrOrder[0]], fIr[iIrOrder[1]]);
 
 	/*Check if the beacon is reached*/
 	if(fIr[iIrOrder[0]] >= 3.25){//If the threshold is reached
@@ -216,160 +217,168 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 	}
 */
 	/*Check for obstacles to calculate relative turning angle*/
-	switch(iIrOrder[0]){//Sensor with maximum IR level
-	case 0:
-		if(fSonar[0] > fTravelDist){
-			if(iIrOrder[1] == 1){//If second max is sensor #1
-				targetValue.fYawAngle = fIrAngle[0] - ((fIrAngle[0] - fIrAngle[1]) * fIr[1] / (fIr[0] + fIr[1]));//Use the weighted angle
-			}
-			else{
-				targetValue.fYawAngle = fIrAngle[0];//Use only max Ir angle
-			}
-			bCalculation = true;//Update flag to publish the calculated target
-		}
-		break;
-	case 1:
-		if(fSonar[0] > fTravelDist){
-			if(abs(iIrOrder[1] - 1) == 1){//Second max is a neighbour
-					targetValue.fYawAngle = fIrAngle[1] - ((fIrAngle[1] - fIrAngle[iIrOrder[1]]) * fIr[iIrOrder[1]] / (fIr[1] + fIr[iIrOrder[1]]));//Use the weighted angle
-			}
-			else{
-				targetValue.fYawAngle = fIrAngle[1];//use the angle directly
-			}
-			bCalculation = true;//Update flag to publish the calculated target
-		}
-		break;
-	case 2:
-		if(fSonar[1] > fTravelDist){
-			if(abs(iIrOrder[1] - 2) == 1){//Second max is a neighbour
-				targetValue.fYawAngle = fIrAngle[2] - ((fIrAngle[2] - fIrAngle[iIrOrder[1]]) * fIr[iIrOrder[1]] / (fIr[2] + fIr[iIrOrder[1]]));//Use the weighted angle
-			}
-			else{
-				targetValue.fYawAngle = fIrAngle[2];
-			}
-			bCalculation = true;//Update flag to publish the calculated target
-		}
-		break;
-	case 3:
-		if(fSonar[1] > fTravelDist){
-			if(abs(iIrOrder[1] - 3) == 1){//Second max is a neighbour
-				targetValue.fYawAngle = fIrAngle[3] - ((fIrAngle[3] - fIrAngle[iIrOrder[1]]) * fIr[iIrOrder[1]] / (fIr[3] + fIr[iIrOrder[1]]));//Use the weighted angle
-			}
-			else{
-				targetValue.fYawAngle = fIrAngle[3];
-			}
-			bCalculation = true;//Update flag to publish the calculated target
-		}
-		break;
-	case 4:
-		if(fSonar[2] > fTravelDist){
-			if(abs(iIrOrder[1] - 4) == 1){//Second max is a neighbour
-				targetValue.fYawAngle = fIrAngle[4] - ((fIrAngle[4] - fIrAngle[iIrOrder[1]]) * fIr[iIrOrder[1]] / (fIr[4] + fIr[iIrOrder[1]]));//Use the weighted angle
-			}
-			else{
-				targetValue.fYawAngle = fIrAngle[4];
-			}
-			bCalculation = true;//Update flag to publish the calculated target
-		}
-		break;
-	case 5:
-		if(fSonar[2] > fTravelDist){
-			if(iIrOrder[1] == 4){//Second max is a neighbour
-				targetValue.fYawAngle = fIrAngle[5] - ((fIrAngle[5] - fIrAngle[4]) * fIr[4] / (fIr[5] + fIr[4]));//Use the weighted angle
-			}
-			else{
-				targetValue.fYawAngle = fIrAngle[5];
-			}
-			bCalculation = true;//Update flag to publish the calculated target
-		}
-		break;
-	}
 
-	/*Use the angle of the second max if first is obstructed*/
-	if(bCalculation == false){
-		switch(iIrOrder[1]){//Sensor with maximum IR level
+	if(bBeacon == false){
+		switch(iIrOrder[0]){//Sensor with maximum IR level
 		case 0:
 			if(fSonar[0] > fTravelDist){
-				targetValue.fYawAngle = fIrAngle[0];
+				if(iIrOrder[1] == 1){//If second max is sensor #1
+					targetValue.fYawAngle = fIrAngle[0] - ((fIrAngle[0] - fIrAngle[1]) * fIr[1] / (fIr[0] + fIr[1]));//Use the weighted angle
+				}
+				else{
+					targetValue.fYawAngle = fIrAngle[0];//Use only max Ir angle
+				}
 				bCalculation = true;//Update flag to publish the calculated target
 			}
 			break;
 		case 1:
 			if(fSonar[0] > fTravelDist){
-				targetValue.fYawAngle = fIrAngle[1];
+				if(abs(iIrOrder[1] - 1) == 1){//Second max is a neighbour
+						targetValue.fYawAngle = fIrAngle[1] - ((fIrAngle[1] - fIrAngle[iIrOrder[1]]) * fIr[iIrOrder[1]] / (fIr[1] + fIr[iIrOrder[1]]));//Use the weighted angle
+				}
+				else{
+					targetValue.fYawAngle = fIrAngle[1];//use the angle directly
+				}
 				bCalculation = true;//Update flag to publish the calculated target
 			}
 			break;
 		case 2:
 			if(fSonar[1] > fTravelDist){
-				targetValue.fYawAngle = fIrAngle[2];
+				if(abs(iIrOrder[1] - 2) == 1){//Second max is a neighbour
+					targetValue.fYawAngle = fIrAngle[2] - ((fIrAngle[2] - fIrAngle[iIrOrder[1]]) * fIr[iIrOrder[1]] / (fIr[2] + fIr[iIrOrder[1]]));//Use the weighted angle
+				}
+				else{
+					targetValue.fYawAngle = fIrAngle[2];
+				}
 				bCalculation = true;//Update flag to publish the calculated target
 			}
 			break;
 		case 3:
 			if(fSonar[1] > fTravelDist){
-				targetValue.fYawAngle = fIrAngle[3];
+				if(abs(iIrOrder[1] - 3) == 1){//Second max is a neighbour
+					targetValue.fYawAngle = fIrAngle[3] - ((fIrAngle[3] - fIrAngle[iIrOrder[1]]) * fIr[iIrOrder[1]] / (fIr[3] + fIr[iIrOrder[1]]));//Use the weighted angle
+				}
+				else{
+					targetValue.fYawAngle = fIrAngle[3];
+				}
 				bCalculation = true;//Update flag to publish the calculated target
 			}
 			break;
 		case 4:
 			if(fSonar[2] > fTravelDist){
-				targetValue.fYawAngle = fIrAngle[4];
+				if(abs(iIrOrder[1] - 4) == 1){//Second max is a neighbour
+					targetValue.fYawAngle = fIrAngle[4] - ((fIrAngle[4] - fIrAngle[iIrOrder[1]]) * fIr[iIrOrder[1]] / (fIr[4] + fIr[iIrOrder[1]]));//Use the weighted angle
+				}
+				else{
+					targetValue.fYawAngle = fIrAngle[4];
+				}
 				bCalculation = true;//Update flag to publish the calculated target
 			}
 			break;
 		case 5:
 			if(fSonar[2] > fTravelDist){
-				targetValue.fYawAngle = fIrAngle[5];
+				if(iIrOrder[1] == 4){//Second max is a neighbour
+					targetValue.fYawAngle = fIrAngle[5] - ((fIrAngle[5] - fIrAngle[4]) * fIr[4] / (fIr[5] + fIr[4]));//Use the weighted angle
+				}
+				else{
+					targetValue.fYawAngle = fIrAngle[5];
+				}
 				bCalculation = true;//Update flag to publish the calculated target
 			}
 			break;
 		}
-	}
 
-	/*If all the directions are obstructed, turn right*/
-	if(bCalculation == false && bTurnCenter == false && bTurnRight == false){
-		targetValue.fYawAngle = -90.00;//Turn right
-		bCalculation = true;//Update flag to publish the calculated target
-		bTurnRight = true;
-		bOnlyTurn = true;
-	}
+		/*Use the angle of the second max if first is obstructed*/
+		if(bCalculation == false){
+			switch(iIrOrder[1]){//Sensor with maximum IR level
+			case 0:
+				if(fSonar[0] > fTravelDist){
+					targetValue.fYawAngle = fIrAngle[0];
+					bCalculation = true;//Update flag to publish the calculated target
+				}
+				break;
+			case 1:
+				if(fSonar[0] > fTravelDist){
+					targetValue.fYawAngle = fIrAngle[1];
+					bCalculation = true;//Update flag to publish the calculated target
+				}
+				break;
+			case 2:
+				if(fSonar[1] > fTravelDist){
+					targetValue.fYawAngle = fIrAngle[2];
+					bCalculation = true;//Update flag to publish the calculated target
+				}
+				break;
+			case 3:
+				if(fSonar[1] > fTravelDist){
+					targetValue.fYawAngle = fIrAngle[3];
+					bCalculation = true;//Update flag to publish the calculated target
+				}
+				break;
+			case 4:
+				if(fSonar[2] > fTravelDist){
+					targetValue.fYawAngle = fIrAngle[4];
+					bCalculation = true;//Update flag to publish the calculated target
+				}
+				break;
+			case 5:
+				if(fSonar[2] > fTravelDist){
+					targetValue.fYawAngle = fIrAngle[5];
+					bCalculation = true;//Update flag to publish the calculated target
+				}
+				break;
+			}
+		}
 
-	/*If all the directions are obstructed and also right is checked, turn left to the center*/
-	if(bCalculation == false && bTurnRight == true && bTurnCenter == false){
-		targetValue.fYawAngle = 90.00;//Turn left
-		bCalculation = true;//Update flag to publish the calculated target
-		bTurnCenter = true;//Ignore not finding enough ir in the left
-		bOnlyTurn = true;
-	}
+		/*If all the directions are obstructed, turn right*/
+		if(bCalculation == false && bTurnCenter == false && bTurnRight == false){
+			targetValue.fYawAngle = -90.00;//Turn right
+			bCalculation = true;//Update flag to publish the calculated target
+			bTurnRight = true;
+			bOnlyTurn = true;
+		}
+
+		/*If all the directions are obstructed and also right is checked, turn left to the center*/
+		if(bCalculation == false && bTurnRight == true && bTurnCenter == false){
+			targetValue.fYawAngle = 90.00;//Turn left
+			bCalculation = true;//Update flag to publish the calculated target
+			bTurnCenter = true;//Ignore not finding enough ir in the left
+			bOnlyTurn = true;
+		}
 	
-	if(bCalculation == false && bTurnCenter == true && bTurnCenter == true){
-		targetValue.fYawAngle = 90.00;//Turn left
-		bCalculation = true;//Update flag to publish the calculated target
-		bTurnLeft = true;//Ignore not finding enough ir in the left		
-		bOnlyTurn = true;
+		if(bCalculation == false && bTurnCenter == true && bTurnCenter == true){
+			targetValue.fYawAngle = 90.00;//Turn left
+			bCalculation = true;//Update flag to publish the calculated target
+			bTurnLeft = true;//Ignore not finding enough ir in the left		
+			bOnlyTurn = true;
+		}
+
+		ROS_INFO("-%d- Relative angle: %f", iCounter, targetValue.fYawAngle);
+		ROS_INFO("-%d- Current angle: %f", iCounter, fCurrentAngleYaw);
+		ROS_INFO("-%d- bCalculation: %d", iCounter, bCalculation);
+
+		/*Transform relative angles to the general coordinate frame*/
+		if(bCalculation == true){//If new target is found
+			targetValue.fYawAngle += fCurrentAngleYaw;//Add current yaw to transfer to original frame
+			if(targetValue.fYawAngle < 0.00) targetValue.fYawAngle += 360.00;//Always keep between 0-360
+			if(targetValue.fYawAngle > 360.00) targetValue.fYawAngle -= 360.00;
+			if(bOnlyTurn == false){//If target is not obstructed
+				targetValue.fXPos = fCurrentPosX + cos(targetValue.fYawAngle * PI / 180.00) * fTravelDist;//Increment on X axis
+				targetValue.fYPos = fCurrentPosY + sin(targetValue.fYawAngle * PI / 180.00) * fTravelDist;//Increment on Y axis
+				bTurnRight = false;
+				bTurnLeft = false;
+				bTurnCenter = false;
+				iCounter++;
+			}
+			else{//If target is obstructed
+				targetValue.fXPos = fCurrentPosX;//Only turn
+				targetValue.fYPos = fCurrentPosY;
+			}
+		}
 	}
 
-	ROS_INFO("Relative angle: %f", targetValue.fYawAngle);
-	ROS_INFO("Current angle: %f", fCurrentAngleYaw);
-	ROS_INFO("bCalculation: %d", bCalculation);
-
-	/*Transform relative angles to the general coordinate frame*/
-	if(bCalculation == true){//If new target is found
-		targetValue.fYawAngle += fCurrentAngleYaw;//Add current yaw to transfer to original frame
-		if(targetValue.fYawAngle < 0.00) targetValue.fYawAngle += 360.00;//Always keep between 0-360
-		if(targetValue.fYawAngle > 360.00) targetValue.fYawAngle -= 360.00;
-		if(bOnlyTurn == false){//If target is not obstructed
-			targetValue.fXPos = fCurrentPosX + cos(targetValue.fYawAngle * PI / 180.00) * fTravelDist;//Increment on X axis
-			targetValue.fYPos = fCurrentPosY + sin(targetValue.fYawAngle * PI / 180.00) * fTravelDist;//Increment on Y axis
-			bTurnRight = false;
-			bTurnLeft = false;
-			bTurnCenter = false;
-		}
-		else{//If target is obstructed
-			targetValue.fXPos = fCurrentPosX;//Only turn
-			targetValue.fYPos = fCurrentPosY;
-		}
+	/*If beacon is found*/
+	else{
 	}
 }
 
