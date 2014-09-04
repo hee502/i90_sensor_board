@@ -1,22 +1,25 @@
 ///////////////////////////////////////////////////////////////////////////////
-//Source for i90_sensor node to update target position based on sensor redings/
+//Source for i90_sensor node to update target position			     						 //
 //v3.3 																																			 //
-//-Waiting limit (2m) for ardrone is added
+//-Comments added
 //Huseyin Emre Erdem 																												 //
 //30.08.2014 																																 //
 ///////////////////////////////////////////////////////////////////////////////
-//WORKS WITH V3.1 & V2.9
-/*This node reads the sensor values from serial port, calculates the next target 
-position to go and publishes this information i90_target_pos topic. The trigger is 
-a new message publishment on i90_current_pos topic.
+
+/*This node reads the sensor values from bluetooth serial port, calculates the 
+next target position and publishes the position on i90_target_pos topic. 
+The trigger is a new message published on i90_current_pos topic.
 The topic publishes messages of types of i90_sensor_board::pos
-Dynamic travel distance: max Ir level - travel distance
+The distance of target changes dynamically based on IR level:
+max Ir level - travel distance
+------------------------------
 3.25 - 3.20: 0.1m
 3.20 - 3.15: 0.2m
 3.15 - 3.10: 0.3m
 3.10 - 3.05: 0.4m
 3.05 - ~   : 0.5m
-In case of an obstructed view, robot turns right and then left
+In case of a fully obstructed view, robot checks right and left.
+In terms of no IR reception, robot goes towards the last memory.
 */
 
 #include "ros/ros.h"
@@ -35,80 +38,75 @@ In case of an obstructed view, robot turns right and then left
 #define THRESHOLD 3.20
 
 /*Variables*/
-char *cpPortName = "/dev/rfcomm0";
-char *cpDronePortName = "/dev/ttyUSB0";
-char *cpMbedPortName = "/dev/ttyACM0";
+char *cpPortName = "/dev/rfcomm0";//Port name of bluetooth serial conn. to sensor board
+char *cpDronePortName = "/dev/ttyUSB0";//Port name of cabled serial connection with usb converter
+char *cpMbedPortName = "/dev/ttyACM0";//Port name for mbed home beacon connection
 char cData[15];//Characters to be read from the serial port
 char *cpData = &cData[0];//pointer to data
 volatile uint8_t iSonar[3];//Sonar distances in cm
 volatile float fSonar[3];//Sonar distances in m
-volatile float fIr[6];//Ir levels
-float fSonarAngle[3] = {40.00, 0.00, -40.00};//Angles of sonar sensors
+volatile float fIr[6];//Ir levels (3.3 max)
+float fSonarAngle[3] = {40.00, 0.00, -40.00};//Angles of sonar sensors relative to robot body
 float fIrAngle[6] = {90.00, 40.00, 10.00, -10.00, -40.00, -90.00};//Angles of infrared sensors relative to the robot body
 volatile float fMaxIr;//Max ir reading level
 volatile float fTravelDist = 0.75;//Distance to travel during straight movement
 volatile int iIrOrder[2] = {};//Order of ir levels (descending). 0:max, 1:second max
-volatile float fCurrentPosX;
-volatile float fCurrentPosY;
-volatile float fCurrentAngleYaw;
+volatile float fCurrentPosX;//Current X pos.
+volatile float fCurrentPosY;//Current Y pos
+volatile float fCurrentAngleYaw;//Current yaw angle
 volatile int iMaxIrNum;//# of ir sensor with the maximum reading
 volatile bool bCalculation;//Flag to check if calculation of the new target is done
 volatile bool bBeaconFound;//0:beacon not found, 1:found
 volatile bool bTurnRight;//Shows if the robot checked right side for ir in case of an obstructed state
-volatile bool bTurnLeft;
-volatile bool bTurnCenter;
-volatile bool bOnlyTurn;
-uint32_t shape = visualization_msgs::Marker::CUBE;
+volatile bool bTurnLeft;//Flag to check if left checked before
+volatile bool bTurnCenter;//Flag to check if center checked before
+volatile bool bOnlyTurn;//Flag that defines if target consists only angle change
+uint32_t shape = visualization_msgs::Marker::CUBE;//Obstacle definition for visualization
 i90_sensor_board::pos targetPos;//Target position to be published on the i90_target_pos topic
-volatile int iObstacleNum = 0;
+volatile int iObstacleNum = 0;//Number of obstacles visualized
 volatile int iCounter = 0;
-volatile int iTurncounter = 0;
-volatile int iIrObstructed[6] = {};
-volatile float fMaxIrAngle;
-volatile bool bTurnTowardsIr = 0;
-volatile bool bIrReception;
-volatile bool bTargetSent = false;
-volatile bool bDroneArrival = false;
-const float fPassingPoint[2][2] = {{1.60, 0.00}, {0.00, 1.60}, };//Passing point [0] is on Y axis
-volatile int iPassingPointNum = 0;
-volatile float fDistanceToPassingPoint;
-volatile bool bPassingPointReached = false;
-volatile bool bHomeReached = false;
-volatile float fPassingPointAngle;
-volatile char cIncomingChar = '0';
-volatile bool bSync = false;
+volatile int iIrObstructed[6] = {};//Flag to represent if ir sensor direction is obstructed
+volatile float fMaxIrAngle;//Angle of max ir reception
+volatile bool bIrReception;//Flag representing if ir is received
+volatile bool bTargetSent = false;//Flag representing if target has been sent
+volatile bool bDroneArrival = false;//Flag representing if drone has arrived
+const float fPassingPoint[2][2] = {{1.60, 0.00}, {0.00, 1.60}, };//Passing point positions
+volatile int iPassingPointNum = 0;//# of closer passing point
+volatile float fDistanceToPassingPoint;//Distance to passing point
+volatile bool bPassingPointReached = false;//Flag represents if pp has been reached
+volatile bool bHomeReached = false;//Flag representing if home has been reached
+volatile float fPassingPointAngle;//The angle towards the pp from current loc.
+volatile char cIncomingChar = '0';//Character read from ar-drone pc serial port
+volatile bool bSync = false;//flag for synchronisation with ar-drone pc
 
 /*Prototypes*/
-void recalculateTarget(const i90_sensor_board::pos i90CurrentPos);
-//void checkDroneArrival(const std_msgs::UInt8 droneState);
-void updatePassingPoint(void);
-float findDistance(float x1, float y1, float x2, float y2);
+void recalculateTarget(const i90_sensor_board::pos i90CurrentPos);//Provides new target upon a new current pos publishment
+void updatePassingPoint(void);//Calculates the distance and angle to closer passing point
+float findDistance(float x1, float y1, float x2, float y2);//Finds distance between two positions
 int setInterfaceAttribs (int iFd, int iSpeed, int iParity);//Sets serial port parameters
 
 /*Opening port*/
-int iPort = open(cpPortName, O_RDWR | O_NOCTTY | O_NDELAY);
-int iDronePort = open(cpDronePortName, O_RDWR | O_NOCTTY | O_NDELAY);
-int iMbedPort = open(cpMbedPortName, O_RDWR | O_NOCTTY | O_NDELAY);
+int iPort = open(cpPortName, O_RDWR | O_NOCTTY | O_NDELAY);//Port for sensor board (bt)
+int iDronePort = open(cpDronePortName, O_RDWR | O_NOCTTY | O_NDELAY);//Port for drone-pc comm
+int iMbedPort = open(cpMbedPortName, O_RDWR | O_NOCTTY | O_NDELAY);//Port for home beacon
 
 /*Main function*/
 int main(int argc, char **argv){
 
 	/*Objects*/
-	ros::init(argc, argv, "i90_sensor");//Create node called "i90_sensor"
+	ros::init(argc, argv, "i90_sensor");//Create "i90_sensor" node
 	ros::NodeHandle n;//Create nodehandler to modify features of the node
-	ros::Publisher targetPub = n.advertise<i90_sensor_board::pos>("i90_target_pos", 1);
-	//ros::Publisher markerPub = n.advertise<visualization_msgs::Marker>("visualization_marker",10);
-	ros::Subscriber translationSub = n.subscribe("i90_current_pos", 1, recalculateTarget);
-	//ros::Subscriber droneArrivalSub = n.subscribe("drone_arrival", 1, checkDroneArrival);
+	ros::Publisher targetPub = n.advertise<i90_sensor_board::pos>("i90_target_pos", 1);//Publisher for target position
+	ros::Subscriber translationSub = n.subscribe("i90_current_pos", 1, recalculateTarget);//Subscriber for current position
 
 	/*Prepare the serial ports*/
   if(iPort == -1){
 	  printf("Error opening the port\n\r");//Inform user on the terminal
   }
   else{
-	  printf("Sensor board serial port is OPEN\n\r");//Inform1409319601.666270183 user on the terminal
+	  printf("Sensor board serial port is OPEN\n\r");//Inform user on the terminal
   }
-	setInterfaceAttribs (iPort, B115200, 0);
+	setInterfaceAttribs (iPort, B115200, 0);//Set parameters
 	tcflush(iPort, TCIFLUSH);//Empty the buffer
 
   if(iDronePort == -1){
@@ -117,7 +115,7 @@ int main(int argc, char **argv){
   else{
 	  printf("Drone PC serial port is OPEN\n\r");//Inform user on the terminal
   }
-	setInterfaceAttribs (iDronePort, B9600, 0);
+	setInterfaceAttribs (iDronePort, B9600, 0);//Set parameters
 	tcflush(iDronePort, TCIFLUSH);//Empty the buffer
 
   if(iMbedPort == -1){
@@ -126,9 +124,10 @@ int main(int argc, char **argv){
   else{
 	  printf("Home beacon serial port is OPEN\n\r");//Inform user on the terminal
   }
-	setInterfaceAttribs (iMbedPort, B115200, 0);
+	setInterfaceAttribs (iMbedPort, B115200, 0);//Set parameters
 	tcflush(iMbedPort, TCIFLUSH);//Empty the buffer
 
+	/*Reset flags*/
 	bCalculation = false;
 	bBeaconFound = false;
 	bTurnRight = false;
@@ -141,31 +140,28 @@ int main(int argc, char **argv){
 		if(bCalculation == true){
 
 			/*Publish the target*/
-			targetPub.publish(targetPos);
-			//ROS_INFO("Published new target: %f\t%f\t%f", targetPos.fXPos, targetPos.fYPos, targetPos.fYawAngle);
+			targetPub.publish(targetPos);//Publish calculated position
 			bCalculation = false;
 		}
 		usleep(200000);//Wait for 200ms (5Hz)
 		ros::spinOnce();
-		//loop_rate.sleep();
 	}
 	return 0;
 }
 
+/*Provides new target upon a new current pos publishment*/
 void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 
 	/*Read current position values*/
 	fCurrentPosX = i90CurrentPos.fXPos;
 	fCurrentPosY = i90CurrentPos.fYPos;
 	fCurrentAngleYaw = i90CurrentPos.fYawAngle;
-	//ROS_INFO("-%d- Received current pos: %f\t%f\t%f", iCounter, fCurrentPosX, fCurrentPosY, fCurrentAngleYaw);
 
 	/*Request & read sensor values on the mbed board*/
 	tcflush(iPort, TCIFLUSH);//Empty the buffer
-	write(iPort,"s",1);
-	//ROS_INFO("Data request sent");//Inform user on the terminal
-	usleep(300000);//sleep for 300ms to allow mbed 
-	read(iPort,cpData,15);//Read 15 bytes from the buffer
+	write(iPort,"s",1);//"send the request byte 's'
+	usleep(300000);//sleep for 300ms to allow mbed read and send all the bytes
+	read(iPort,cpData,15);//Read 15 bytes from the buffer (both ir and sonars)
 
 	/*Clean the variables*/
 	for(int i=0; i<6;i++){
@@ -177,20 +173,17 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 		iSonar[i] = cData[i];
 		fSonar[i] = iSonar[i] / 100.00;
 	}
-	//printf("-%d- Sonar: %f\t%f\t%f\n\r", iCounter, fSonar[0], fSonar[1], fSonar[2]);
 
 	for(int i=0;i<6;i++){//Ir values
 		fIr[i] += cData[4+2*i] / 100.00;//Decimal part
 		fIr[i] += (float) cData[3+2*i];//Integer part
 	}
-	//printf("IR: %f\t%f\t%f\t%f\t%f\t%f\n\r", fIr[0], fIr[1], fIr[2], fIr[3], fIr[4], fIr[5]);
 
 	/*Look for the unobstructed directions*/
 	if((fSonar[0] < 0.2) || (fSonar[1] < 0.16) || (fSonar[2] < 0.2)){//If front is blocked to do action1
 		for(int i=1;i<5;i++){
 			iIrObstructed[i] = 1;
 		}
-		//printf("Action1 cannot be performed.\n\r");
 	}
 	else{//No obstruction for action1, check for travelDist
 
@@ -226,24 +219,24 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 		fMaxIr = 0.00;
 		iMaxIrNum = 0;
 		for(int i=0;i<6;i++){
-			if(fIr[i] >= THRESHOLD){
-				if(bPassingPointReached == false){
+			if(fIr[i] >= THRESHOLD){//Check if beacon is close enough
+				if(bPassingPointReached == false){//If the beacon found is the target beacon
 					bBeaconFound = true;
 					printf("Beacon is found.\n\r");
 				}
-				else{
-					//printf("Reached home.REACHED HOME\n\r");
-					bBeaconFound = true;
+				else{//If the beacon found is the home beacon
+					bBeaconFound = true;//Set flags
 					bHomeReached = true;
 				}
 			}
-			if(iIrObstructed[i] == 0){
+			if(iIrObstructed[i] == 0){//Check ir only if not obstructed
 				if(fIr[i] >= fMaxIr){
-					fMaxIr = fIr[i];
-					iMaxIrNum = i;
+					fMaxIr = fIr[i];//Assign max ir value
+					iMaxIrNum = i;//Assign number of ir sensor w/ max ir
 				}
 			}
 		}
+		/*Set travel distance (closer to beacon, smaller the movement)*/
 		if(fMaxIr >= (THRESHOLD - 0.3)){
 			fTravelDist = 0.2;
 		}
@@ -263,33 +256,30 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 
 		/*Check if Ir is available*/
 		if(fMaxIr <= 0.02){//If ir is not received
-			iMaxIrNum = 3;//Go forward
-			bIrReception = false;
+			iMaxIrNum = 3;//Go forward if no memory is available
+			bIrReception = false;//Set the flag
 		}
 		else{
 			bIrReception = true;
 		}
-
-		//printf("Maximum IR: %f, Num: %d\n\r", fMaxIr, iMaxIrNum);
 	}
 
+	/*If the search for target/home beacon is active*/
 	if(bBeaconFound == false){
 
 		/*If Ir is being received*/
 		if(bIrReception == true){
 
-			if(bPassingPointReached == false){
-				targetPos.fYawAngle = fIrAngle[iMaxIrNum];
+			if(bPassingPointReached == false){//If target beacon is being searched
+				targetPos.fYawAngle = fIrAngle[iMaxIrNum];//Set target angle as max ir angle
 			}
-			else{
-				if(iMaxIrNum != 0 || iMaxIrNum != 5){
+			else{//If the home beacon is being searched
+				if(iMaxIrNum != 0 || iMaxIrNum != 5){//Don't consider ir reception further than 50 degrees to the robot's y axis
 					targetPos.fYawAngle = fIrAngle[iMaxIrNum];
 				}
 			}
 
-			if(iMaxIrNum == 0 || iMaxIrNum == 5){
-				//targetPos.fYawAngle -= fIr[1] / (fIr[0] + fIr[1]) * (fIrAngle[0] - fIrAngle[1]);
-			}
+			/*Calculate angle offsets based on second max ir reading*/
 			if(iMaxIrNum == 2 || iMaxIrNum == 3){
 				if(iMaxIrNum == 2){
 					if((fMaxIr > 2.00) && (fIr[3] > fIr[1])){
@@ -314,19 +304,19 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 					}
 				}
 			}
+
 			bOnlyTurn = false;
-			fMaxIrAngle = fCurrentAngleYaw + fIrAngle[iMaxIrNum];
-			//printf("Ir is increasing. New target angle: %f\n\r", targetPos.fYawAngle);
+			fMaxIrAngle = fCurrentAngleYaw + fIrAngle[iMaxIrNum];//Convert the angle to the general coord. frame
 		}
 
 		/*If Ir is not received*/
 		else{
 			bool bFlag = false;
 
-			/*If not yet turned to the right*/
+			/*If not yet turned to the right/left*/
 			if(bFlag == false && bTurnRight == false && bTurnLeft == false){
+				/*Turn right/left*/
 				if(rand()%1){
-					//printf("No Ir. Turning right.\n\r");
 					targetPos.fYawAngle = -90.00;//Turn right
 					bTurnRight = true;
 					bOnlyTurn = true;
@@ -334,42 +324,36 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 				}
 				else{
 					//printf("No Ir. Turning left.\n\r");
-					targetPos.fYawAngle = 90.00;//Turn right
+					targetPos.fYawAngle = 90.00;//Turn left
 					bTurnLeft = true;
 					bOnlyTurn = true;
 					bFlag = true;
 				}				
 			}
 
-			/*If all the directions are obstructed and also right is checked, turn left to the center*/
+			/*If all the directions are obstructed and also right/left is checked, turn towards the center*/
 			if(bFlag == false && bTurnRight == true && bTurnLeft == false && bTurnCenter == false){
-				//printf("No Ir. Turning center.\n\r");
 				targetPos.fYawAngle = 90.00;//Turn left
-				bTurnCenter = true;//Ignore not finding enough ir in the left
+				bTurnCenter = true;
 				bOnlyTurn = true;
 				bFlag = true;
 			}
-
 			if(bFlag == false && bTurnRight == false && bTurnLeft == true && bTurnCenter == false){
 				//printf("No Ir. Turning center.\n\r");
 				targetPos.fYawAngle = -90.00;//Turn right
-				bTurnCenter = true;//Ignore not finding enough ir in the left
+				bTurnCenter = true;
 				bOnlyTurn = true;
 				bFlag = true;
 			}
 
-			/*If all the directions are obstructed, right checked and robot is in the center dir, turn left*/
+			/*If all the directions are obstructed, right/left checked and robot is in the center dir, turn right/left*/
 			if(bFlag == false && bTurnRight == true && bTurnCenter == true && bTurnLeft == false){
-				//printf("No Ir. Turning left.\n\r");
 				targetPos.fYawAngle = 90.00;//Turn left
-				bTurnLeft = true;//Ignore not finding enough ir in the left		
+				bTurnLeft = true;
 				bOnlyTurn = true;
 				bFlag = true;
-
 			}
-
 			if(bFlag == false && bTurnRight == false && bTurnCenter == true && bTurnLeft == true){
-				//printf("No Ir. Turning right.\n\r");
 				targetPos.fYawAngle = -90.00;//Turn right
 				bTurnRight = true;//Ignore not finding enough ir in the left		
 				bOnlyTurn = true;
@@ -377,9 +361,8 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 
 			}
 
-			/*If no ir not received in front, right and left sides, go towards the last memory of max ir direction*/
+			/*If no ir received in front, right and left go towards the last memory of max ir direction*/
 			if(bFlag == false && bTurnRight == true && bTurnCenter == true && bTurnLeft == true){
-				//printf("NO IR. Cur %f\t%f\n\r", fCurrentAngleYaw, fMaxIrAngle);
 				/*If the angle diff with the last memory is smaller than 90 degrees*/				
 				if(abs(fCurrentAngleYaw - fMaxIrAngle) < 90.00){
 					targetPos.fYawAngle = fMaxIrAngle - fCurrentAngleYaw;
@@ -398,23 +381,17 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 			}
 		}
 
-		//ROS_INFO("-%d- Relative angle: %f", iCounter, targetPos.fYawAngle);
-		//ROS_INFO("-%d- Current angle: %f", iCounter, fCurrentAngleYaw);
-
-		/*Transform relative angles to the general coordinate frame*/
+		/*Calculate target pos rel. to gen. coord. frame*/
 		if(bOnlyTurn == true){//Only Turn
-			//printf("Only turning.\n\r");
 			targetPos.fYawAngle += fCurrentAngleYaw;//Add current yaw to transfer to original frame
-			if(targetPos.fYawAngle < 0.00) targetPos.fYawAngle += 360.00;//Always keep between 0-360
+			if(targetPos.fYawAngle < 0.00) targetPos.fYawAngle += 360.00;//Cap between 0-360
 			if(targetPos.fYawAngle > 360.00) targetPos.fYawAngle -= 360.00;
 			targetPos.fXPos = fCurrentPosX;
 			targetPos.fYPos = fCurrentPosY;
-			bCalculation = true;
+			bCalculation = true;//Set flag to publish calculated target
 			iCounter++;
 		}
-
-		else{//Go forward & Turn & go forward
-			//printf("3 actions\n\r");
+		else{//Go forward & Turn & go forward (3 actions)
 			targetPos.fYawAngle += fCurrentAngleYaw;//Add current yaw to transfer to original frame
 			if(targetPos.fYawAngle < 0.00) targetPos.fYawAngle += 360.00;//Always keep between 0-360
 			if(targetPos.fYawAngle > 360.00) targetPos.fYawAngle -= 360.00;
@@ -426,7 +403,7 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 				targetPos.fXPos += cos(targetPos.fYawAngle * PI / 180.00) * fTravelDist;//Increment on X axis
 				targetPos.fYPos += sin(targetPos.fYawAngle * PI / 180.00) * fTravelDist;//Increment on Y axis
 			}
-			bCalculation = true;
+			bCalculation = true;//Set flags to enable publishing on required topics
 			bTurnRight = false;
 			bTurnLeft = false;
 			bTurnCenter = false;
@@ -434,12 +411,11 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 		}
 	}
 
-	/*If beacon is found*/
+	/*If beacon has been found*/
 	else{
-
 		/*Send the target to the drone*/
 		while(bTargetSent == false){
-			/*Send "a" and wait for "b" in return*/
+			/*Sync with the other pc by sending "a" and wait for "b" in return*/
 			tcflush(iDronePort, TCIFLUSH);//Empty the buffer
 			write(iDronePort,"a",1);
 			printf("Sync signal has been sent to the Drone.\n\r");
@@ -447,25 +423,25 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 			char cIncomingChar = 'a';
 			char *cpIncomingChar = &cIncomingChar;
 
-			int iCount = 0;
-			while(iCount < 120){
+			int iCount = 0;//Counter for time limit for reply
+			while(iCount < 120){//If time limit is not reached
 				read(iDronePort, cpIncomingChar, 1);//Read 1 byte from the buffer
-				if(cIncomingChar != 'b'){
+				if(cIncomingChar != 'b'){//If correct handshake char is received
 					bSync = true;
 					break;
 				}
 				usleep(1000000);
 				iCount++;
-				printf("Time passed: %d\n\r", iCount);
+				printf("Time passed: %d\n\r", iCount);//Inform user
 			}
-			if(iCount == 120){
+			if(iCount == 120){//If loop ended because of time limit
 				printf("Synchronization failed.\n\r");
 				bSync = false;
 			}
 
+			/*If sync was succcessful, send target pos*/
 			if(bSync == true){
 				/*Calculate the characters to be sent*/
-				//printf("%f\t%f\n\r", fCurrentPosX, fCurrentPosY);
 				char cToSend[4];
 				char *cpToSend = &cToSend[0];
 				uint8_t iX = (int) floor(fCurrentPosX);
@@ -489,6 +465,7 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 			}
 		}
 
+		/*If target sent wait for drone to arrive up to 2mins*/
 		if(bSync == true){
 
 			/*If drone not arrived yet*/
@@ -500,12 +477,13 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 
 			int iCount = 0;	
 
+			/*While time limit is not reached, keep checking for success/failure message*/
 			while(iCount < 120){
 				read(iDronePort, cpIncomingChar, 1);//Read 1 byte from the buffer
-				if(cIncomingChar == 'c'){
+				if(cIncomingChar == 'c'){//success
 					break;
 				}
-				if(cIncomingChar == 'e'){
+				if(cIncomingChar == 'e'){//failure
 					break;
 				}
 				usleep(1000000);
@@ -513,6 +491,7 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 				printf("Time passed: %d\n\r", iCount);
 			}
 
+			/*If ended due to time limit*/
 			if(iCount == 120){
 				printf("Drone couldn't make it.\n\rGoing back to passing point.\n\r");
 			}
@@ -530,13 +509,10 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 		/*Drone already arrived, going home*/
 		/*Go to the passing point if not reached*/
 		if(bPassingPointReached == false){
-			updatePassingPoint();
+			updatePassingPoint();//Update passing point distance & angle
 		}
 
 		if(bPassingPointReached == false){
-			//go to passing point
-			//printf("\n\rGOING TO PASSING POINT %d.\n\r", iPassingPointNum);
-
 			/*Turn towards passing point*/
 			if(fCurrentAngleYaw < 180.00){
 				if(fPassingPointAngle > fCurrentAngleYaw && fPassingPointAngle < (fCurrentAngleYaw + 180.00)){//PP is on the left, turn CCW
@@ -606,12 +582,9 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 					}
 				}
 			}
-			//ROS_INFO("-%d- Relative angle: %f", iCounter, targetPos.fYawAngle);
-			//ROS_INFO("-%d- Current angle: %f", iCounter, fCurrentAngleYaw);
 
 			/*Transform relative angles to the general coordinate frame*/
 			if(bOnlyTurn == true){//Only Turn
-				//printf("Only turning.\n\r");
 				targetPos.fYawAngle += fCurrentAngleYaw;//Add current yaw to transfer to original frame
 				if(targetPos.fYawAngle < 0.00) targetPos.fYawAngle += 360.00;//Always keep between 0-360
 				if(targetPos.fYawAngle > 360.00) targetPos.fYawAngle -= 360.00;
@@ -622,7 +595,6 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 			}
 
 			else{//Go forward & Turn & go forward
-				//printf("3 actions\n\r");
 				targetPos.fYawAngle += fCurrentAngleYaw;//Add current yaw to transfer to original frame
 				if(targetPos.fYawAngle < 0.00) targetPos.fYawAngle += 360.00;//Always keep between 0-360
 				if(targetPos.fYawAngle > 360.00) targetPos.fYawAngle -= 360.00;
@@ -656,27 +628,25 @@ void recalculateTarget(const i90_sensor_board::pos i90CurrentPos){
 		}
 	}
 }
-/*
-void checkDroneArrival(const std_msgs::UInt8 droneState){
-	bDroneArrival = true;
-}
-*/
+
+/*Finds distance between two positions*/
 float findDistance(float x1, float y1, float x2, float y2){
 	float fDistX = x1 - x2;
 	float fDistY = y1 - y2;
 	float fDistance = pow(fDistX, 2);
 	fDistance += pow(fDistY ,2);
-	fDistance = sqrt(fDistance);
+	fDistance = sqrt(fDistance);//hypotenus theorem
 	return fDistance;
 }
 
-/*Calculates the distance to the passingPoints, selects proper one*/
+/*Calculates the distance and angle to closer passing point*/
 void updatePassingPoint(void){
+	/*Find distances to 2 PPs*/
 	float fDistances[2];
 	fDistances[0] = findDistance(fCurrentPosX, fCurrentPosY, fPassingPoint[0][0], fPassingPoint[0][1]);
 	fDistances[1] = findDistance(fCurrentPosX, fCurrentPosY, fPassingPoint[1][0], fPassingPoint[1][1]);
-	//printf("Distances: %f\t%f\n\r", fDistances[0], fDistances[1]);
 
+	/*Decide the closer PP*/
 	if(fDistances[0] <= fDistances[1]){
 		iPassingPointNum = 0;
 		fDistanceToPassingPoint = fDistances[0];
@@ -685,17 +655,21 @@ void updatePassingPoint(void){
 		iPassingPointNum = 1;
 		fDistanceToPassingPoint = fDistances[1];
 	}
+
+	/*Check the distance to PP to flag if PP has been reached*/
 	if(fDistanceToPassingPoint < 0.5){
 		bPassingPointReached = true;
 	}
+
+	/*Calculate angle*/
 	fPassingPointAngle = atan2((fPassingPoint[iPassingPointNum][1] - fCurrentPosY), (fPassingPoint[iPassingPointNum][0] - fCurrentPosX));
 	fPassingPointAngle /= M_PI;
 	fPassingPointAngle *= 180.00;
 	if(fPassingPointAngle < 0.00) fPassingPointAngle += 360.00;
 	if(fPassingPointAngle > 360.00) fPassingPointAngle -= 360.00;
-	//printf("PP - num: %d\tdist: %f\tangle: %f\n\r", iPassingPointNum, fDistanceToPassingPoint, fPassingPointAngle);
 }
 
+/*Sets serial port parameters*/
 int setInterfaceAttribs (int iFd, int iSpeed, int iParity){
 	struct termios tty;
 	memset (&tty, 0, sizeof tty);
